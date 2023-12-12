@@ -2,6 +2,7 @@
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -13,8 +14,8 @@
 // data
 struct editorConfig
 {
-	int screenRws, screencls;
-	
+	int screenRws, screenCls;
+
 	struct termios orig_termios;
 };
 
@@ -72,24 +73,82 @@ int getWindowSize(int *rws, int *cls)
 	}
 }
 
+int getCursorPosition(int *rows, int *cols)
+{
+	char buf[32];
+	unsigned int i = 0;
+	if (write(STDOUT_FILENO, "\x1b[6n", 4) != 4)
+		return -1;
+	while (i < sizeof(buf) - 1)
+	{
+		if (read(STDIN_FILENO, &buf[i], 1) != 1)
+			break;
+		if (buf[i] == 'R')
+			break;
+		i++;
+	}
+	buf[i] = '\0';
+	if (buf[0] != '\x1b' || buf[1] != '[')
+		return -1;
+	if (sscanf(&buf[2], "%d;%d", rows, cols) != 2)
+		return -1;
+	return 0;
+}
+
+// append buffer
+struct abuf
+{
+	char *b;
+	int len;
+};
+
+#define ABUF_INIT                                                              \
+	{                                                                          \
+		NULL, 0                                                                \
+	}
+
+void abAppend(struct abuf *ab, const char *s, int len)
+{
+	char *new = realloc(ab->b, ab->len + len);
+	if (new == NULL)
+		return;
+	memcpy(&new[ab->len], s, len);
+	ab->b = new;
+	ab->len += len;
+}
+
+void abFree(struct abuf *ab) { free(ab->b); }
+
 // output
-void drawRows()
+void drawRows(struct abuf *ab)
 {
 	int y;
 	for (y = 0; y < E.screenRws; y++)
 	{
-		write(STDOUT_FILENO, "~\r\n", 3);
+		abAppend(ab, "~", 1);
+		abAppend(ab, "\x1b[K", 3);
+
+		if (y < E.screenRws - 1)
+		{
+			abAppend(ab, "\r\n", 2);
+		}
 	}
 }
 
 void refreshScreen()
 {
-	write(STDOUT_FILENO, "\x1b[2J", 4);
-	write(STDOUT_FILENO, "\x1b[H", 3);
+	struct abuf ab = ABUF_INIT;
 
-	drawRows();
+	abAppend(&ab, "\x1b[?25l", 6);
+	abAppend(&ab, "\x1b[H", 3);
 
-	write(STDOUT_FILENO, "\x1b[H", 3);
+	drawRows(&ab);
+
+	abAppend(&ab, "\x1b[H", 3);
+	abAppend(&ab, "\x1b[?25h", 6);
+
+	write(STDOUT_FILENO, ab.b, ab.len);
+	abFree(&ab);
 }
 
 // input
@@ -122,7 +181,7 @@ void handleKeyPress()
 // init
 void init()
 {
-	if (getWindowSize(&E.screenRws, &E.screencls) == -1)
+	if (getWindowSize(&E.screenRws, &E.screenCls) == -1)
 	{
 		die("getWindowSize");
 	}
