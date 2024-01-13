@@ -11,9 +11,18 @@
 // defines
 #define CTRL_KEY(k) ((k) & 0x1f)
 
+enum editorKey
+{
+	KEY_K,
+	KEY_J,
+	KEY_L,
+	KEY_H
+};
+
 // data
 struct editorConfig
 {
+	int cx, cy;
 	int screenRws, screenCls;
 
 	struct termios orig_termios;
@@ -125,9 +134,30 @@ void drawRows(struct abuf *ab)
 	int y;
 	for (y = 0; y < E.screenRws; y++)
 	{
-		abAppend(ab, "~", 1);
-		abAppend(ab, "\x1b[K", 3);
+		if (y == E.screenRws / 3)
+		{
+			char message[80];
+			int messageLen = snprintf(message, sizeof(message), "Mat ", "WWW");
 
+			if (messageLen > E.screenCls)
+				messageLen = E.screenCls;
+
+			int padding = (E.screenCls - messageLen) / 2;
+			if (padding)
+			{
+				abAppend(ab, "~", 1);
+				padding--;
+			}
+
+			while (padding--)
+				abAppend(ab, " ", 1);
+			abAppend(ab, message, messageLen);
+		}
+		else
+		{
+			abAppend(ab, "~", 1);
+		}
+		abAppend(ab, "\x1b[K", 3);
 		if (y < E.screenRws - 1)
 		{
 			abAppend(ab, "\r\n", 2);
@@ -144,7 +174,10 @@ void refreshScreen()
 
 	drawRows(&ab);
 
-	abAppend(&ab, "\x1b[H", 3);
+	char buf[32];
+	snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cy + 1, E.cx + 1);
+	abAppend(&ab, buf, strlen(buf));
+
 	abAppend(&ab, "\x1b[?25h", 6);
 
 	write(STDOUT_FILENO, ab.b, ab.len);
@@ -152,7 +185,38 @@ void refreshScreen()
 }
 
 // input
-char readKey()
+void moveCursor(int key)
+{
+	switch (key)
+	{
+
+	case KEY_K:
+		if (E.cy != 0)
+		{
+			E.cy--;
+		}
+		break;
+	case KEY_J:
+		if (E.cy != E.screenCls - 1)
+		{
+			E.cy++;
+		}
+		break;
+	case KEY_H:
+		if (E.cx != 0)
+		{
+			E.cx--;
+		}
+		break;
+	case KEY_L:
+		if (E.cx != E.screenCls - 1)
+		{
+			E.cx++;
+		}
+		break;
+	}
+}
+int readKey()
 {
 	int nread;
 	char c;
@@ -161,12 +225,38 @@ char readKey()
 		if (nread == -1 && errno != EAGAIN)
 			die("read");
 	}
-	return c;
+	if (c == '\x1b')
+	{
+		char seq[3];
+		if (read(STDIN_FILENO, &seq[0], 1) != 1)
+			return '\x1b';
+		if (read(STDIN_FILENO, &seq[1], 1) != 1)
+			return '\x1b';
+		if (seq[0] == '[')
+		{
+		}
+		return '\x1b';
+	}
+	else
+	{
+		switch (c)
+		{
+		case 'k':
+			return KEY_K;
+		case 'j':
+			return KEY_J;
+		case 'h':
+			return KEY_H;
+		case 'l':
+			return KEY_L;
+		}
+		return c;
+	}
 }
 
 void handleKeyPress()
 {
-	char c = readKey();
+	int c = readKey();
 
 	switch (c)
 	{
@@ -175,12 +265,21 @@ void handleKeyPress()
 		write(STDOUT_FILENO, "\x1b[H", 3);
 		exit(0);
 		break;
+	case KEY_K:
+	case KEY_J:
+	case KEY_H:
+	case KEY_L:
+		moveCursor(c);
+		break;
 	}
 }
 
 // init
 void init()
 {
+	E.cx = 0;
+	E.cy = 0;
+
 	if (getWindowSize(&E.screenRws, &E.screenCls) == -1)
 	{
 		die("getWindowSize");
