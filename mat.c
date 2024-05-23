@@ -16,8 +16,9 @@
 
 // globals
 int MAT_TABSTOP = 4;
+
 char *current_file_extension;
-char *filename;
+char *current_filename;
 
 enum editorKey
 {
@@ -303,7 +304,7 @@ void drawStatus(struct abuf *ab)
 
     int len = snprintf(status, sizeof(status), "  Mat");
 
-    int rlen = snprintf(rstatus, sizeof(rstatus), "%s %s - %d/%d", language_symbol, filename, E.cy + 1, E.numRws);
+    int rlen = snprintf(rstatus, sizeof(rstatus), "%s %s - %d/%d", language_symbol, current_filename, E.cy + 1, E.numRws);
 
     if (len > E.screenCls)
     {
@@ -556,9 +557,10 @@ int main(int argc, char *argv[])
 
     if (argc >= 2)
     {
-        filename = argv[1];
-        open(filename);
-        current_file_extension = get_file_extension(filename);
+        current_filename = argv[1];
+
+        open(current_filename);
+        current_file_extension = get_file_extension(current_filename);
     }
 
     while (1)
