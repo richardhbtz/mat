@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #include <sys/ioctl.h>
+#include <sys/types.h>
 
 // defines
 #define CTRL_KEY(k) ((k) & 0x1f)
@@ -22,10 +23,19 @@ enum editorKey
 };
 
 // data
+typedef struct erow
+{
+    int size;
+    char *chars;
+} erow;
+
 struct editorConfig
 {
     int cx, cy;
+    int rowoff, coloff;
     int screenRws, screenCls;
+    int numRws;
+    erow *row;
 
     struct termios orig_termios;
 };
@@ -105,6 +115,40 @@ int getCursorPosition(int *rows, int *cols)
         return -1;
     return 0;
 }
+void appendRws(char *s, size_t len)
+{
+    E.row = realloc(E.row, sizeof(erow) * (E.numRws + 1));
+
+    int at = E.numRws;
+    E.row[at].size = len;
+    E.row[at].chars = malloc(len + 1);
+    memcpy(E.row[at].chars, s, len);
+    E.row[at].chars[len] = '\0';
+    E.numRws++;
+}
+// file io
+void open(char *filename)
+{
+    FILE *file = fopen(filename, "r");
+    if (!file)
+        die("file open");
+
+    char *line = NULL;
+    size_t cap = 0;
+    size_t len;
+
+    while ((len = getline(&line, &cap, file)) != -1)
+    {
+        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
+        {
+            len--;
+            appendRws(line, len);
+        }
+    }
+
+    free(line);
+    fclose(file);
+}
 
 // append buffer
 struct abuf
@@ -128,34 +172,70 @@ void abAppend(struct abuf *ab, const char *s, int len)
 void abFree(struct abuf *ab) { free(ab->b); }
 
 // output
+void scroll()
+{
+    if (E.cy < E.rowoff)
+    {
+        E.rowoff = E.cy;
+    }
+    if (E.cy >= E.rowoff + E.screenRws)
+    {
+        E.rowoff = E.cy - E.screenRws + 1;
+    }
+
+    if (E.cx < E.coloff)
+    {
+        E.coloff = E.cx;
+    }
+    if (E.cx >= E.coloff + E.screenCls)
+    {
+        E.coloff = E.cx - E.screenCls + 1;
+    }
+}
+
 void drawRows(struct abuf *ab)
 {
     int y;
     for (y = 0; y < E.screenRws; y++)
     {
-        if (y == E.screenRws - 1)
+        int filerow = y + E.rowoff;
+        if (filerow >= E.numRws)
         {
-            char message[10];
-            int messageLen = snprintf(message, sizeof(message), "󰅨 Mat");
-            if (messageLen > E.screenCls)
-                messageLen = E.screenCls;
+            if (y == E.screenRws - 1)
+            {
+                char message[10];
+                int messageLen = snprintf(message, sizeof(message), "󰅨 Mat");
+                if (messageLen > E.screenCls)
+                    messageLen = E.screenCls;
 
-            int padding = 0;
+                int padding = 0;
 
-            if (padding)
+                if (padding)
+                {
+                    abAppend(ab, "~", 1);
+                    padding--;
+                }
+
+                while (padding--)
+                    abAppend(ab, " ", 1);
+
+                abAppend(ab, message, messageLen);
+            }
+            else
             {
                 abAppend(ab, "~", 1);
-                padding--;
             }
-
-            while (padding--)
-                abAppend(ab, " ", 1);
-
-            abAppend(ab, message, messageLen);
         }
         else
         {
-            abAppend(ab, "~", 1);
+            int len = E.row[filerow].size - E.coloff;
+
+            if (len < 0)
+                len = 0;
+
+            if (len > E.screenCls)
+                len = E.screenCls;
+            abAppend(ab, &E.row[filerow].chars[E.coloff], len);
         }
         abAppend(ab, "\x1b[K", 3);
         if (y < E.screenRws - 1)
@@ -167,6 +247,8 @@ void drawRows(struct abuf *ab)
 
 void refreshScreen()
 {
+    scroll();
+
     struct abuf ab = ABUF_INIT;
 
     abAppend(&ab, "\x1b[?25l", 6);
@@ -175,7 +257,7 @@ void refreshScreen()
     drawRows(&ab);
 
     char buf[32];
-    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cy + 1, E.cx + 1);
+    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 1, (E.cx - E.coloff) + 1);
     abAppend(&ab, buf, strlen(buf));
 
     abAppend(&ab, "\x1b[?25h", 6);
@@ -187,33 +269,50 @@ void refreshScreen()
 // input
 void moveCursor(int key)
 {
+    erow *row = (E.cy >= E.numRws) ? NULL : &E.row[E.cy];
     switch (key)
     {
 
-    case KEY_K:
+    case KEY_K: // UP
         if (E.cy != 0)
         {
             E.cy--;
         }
+        else if (E.cy > 0)
+        {
+            E.cy--;
+            E.cx = E.row[E.cy].size;
+        }
         break;
-    case KEY_J:
-        if (E.cy != E.screenRws - 2)
+    case KEY_J: // DOWN
+        if (E.cy < E.numRws)
         {
             E.cy++;
         }
         break;
-    case KEY_H:
+    case KEY_H: // LEFT
         if (E.cx != 0)
         {
             E.cx--;
         }
         break;
-    case KEY_L:
-        if (E.cx != E.screenCls - 1)
+    case KEY_L: // RIGHT
+        if (row && E.cx < row->size)
         {
             E.cx++;
         }
+        else if (row && E.cx == row->size)
+        {
+            E.cy++;
+            E.cx = 0;
+        }
         break;
+    }
+    row = (E.cy >= E.numRws) ? NULL : &E.row[E.cy];
+    int rowlen = row ? row->size : 0;
+    if (E.cx > rowlen)
+    {
+        E.cx = rowlen;
     }
 }
 int readKey()
@@ -234,102 +333,102 @@ int readKey()
             return '\x1b';
         if (seq[0] == '[')
         {
-            if (seq[1] >= '0' && seq[1] <= '9')
-            {
-                if (read(STDIN_FILENO, &seq[2], 1) != 1)
-                    return '\x1b';
-
-                if (seq[2] == '~')
-                    switch (seq[1])
-                    {
-                    case '3':
-                        return KEY_H;
-                    }
-            }
-            return '\x1b';
         }
-        else
-        {
-            switch (c)
-            {
-            case 'x':
-                return KEY_X;
-            case 'k':
-                return KEY_K;
-            case 'j':
-                return KEY_J;
-            case 'h':
-                return KEY_H;
-            case 'l':
-                return KEY_L;
-            }
-            return c;
-        }
+        return '\x1b';
     }
-
-    void handleKeyPress()
+    else
     {
-        int c = readKey();
-
         switch (c)
         {
-        case CTRL_KEY('u'):
-            // TODO
-            for (int y = 0; y < 4; y++)
-            {
-                if (E.cy - 1 < E.screenRws)
-                {
-                    moveCursor(KEY_K);
-                }
-            }
-            break;
-        case CTRL_KEY('d'):
-            // TODO
-            for (int y = 0; y < 4; y++)
-            {
-                if (E.cy + 1 <= E.screenRws)
-                {
-                    moveCursor(KEY_J);
-                }
-            }
-            break;
-        case CTRL_KEY('q'):
-            write(STDOUT_FILENO, "\x1b[2J", 4);
-            write(STDOUT_FILENO, "\x1b[H", 3);
-            exit(0);
-            break;
-        case KEY_K:
-        case KEY_J:
-        case KEY_H:
-        case KEY_L:
-            moveCursor(c);
-            break;
+        case 'k':
+            return KEY_K;
+        case 'j':
+            return KEY_J;
+        case 'h':
+            return KEY_H;
+        case 'l':
+            return KEY_L;
+        case 'x':
+            return KEY_X;
         }
+        return c;
     }
+}
 
-    // init
-    void init()
+void handleKeyPress()
+{
+    int c = readKey();
+
+    switch (c)
     {
-        E.cx = 0;
-        E.cy = 0;
-
-        if (getWindowSize(&E.screenRws, &E.screenCls) == -1)
+    case CTRL_KEY('u'):
+        // TODO
+        for (int y = 0; y < 4; y++)
         {
-            die("getWindowSize");
+            if (E.cy - 1 < E.screenRws)
+            {
+                moveCursor(KEY_K);
+            }
         }
-    }
+        break;
+    case CTRL_KEY('d'):
+        // TODO
+        for (int y = 0; y < 4; y++)
+        {
+            if (E.cy + 1 <= E.screenRws)
+            {
+                moveCursor(KEY_J);
+            }
+        }
+        break;
+    case CTRL_KEY('q'):
+        write(STDOUT_FILENO, "\x1b[2J", 4);
+        write(STDOUT_FILENO, "\x1b[H", 3);
+        exit(0);
+        break;
 
-    int main(int argc, char *argv[])
+    case KEY_K:
+    case KEY_J:
+    case KEY_H:
+    case KEY_L:
+        moveCursor(c);
+        break;
+    }
+}
+
+// init
+void init()
+{
+    E.cx = 0;
+    E.cy = 0;
+
+    E.numRws = 0;
+    E.row = NULL;
+    E.rowoff = 0;
+    E.coloff = 0;
+
+    if (getWindowSize(&E.screenRws, &E.screenCls) == -1)
     {
-        enableRawMode();
-        init();
-
-        while (1)
-        {
-            refreshScreen();
-            handleKeyPress();
-        }
-
-        disableRawMode();
-        return 0;
+        die("getWindowSize");
     }
+}
+
+int main(int argc, char *argv[])
+{
+    enableRawMode();
+    init();
+
+    if (argc >= 2)
+    {
+        open(argv[1]);
+    }
+
+    while (1)
+    {
+        refreshScreen();
+        handleKeyPress();
+    }
+
+    disableRawMode();
+    return 0;
+}
