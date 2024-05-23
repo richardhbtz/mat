@@ -16,6 +16,8 @@
 
 // globals
 int MAT_TABSTOP = 4;
+char *current_file_extension;
+char *filename;
 
 enum editorKey
 {
@@ -187,7 +189,18 @@ void appendRws(char *s, size_t len)
 
     E.numRws++;
 }
+
 // file io
+char *get_file_extension(const char *filename)
+{
+    char *dot = strrchr(filename, '.');
+    if (!dot || dot == filename)
+    {
+        return "";
+    }
+    return dot + 1;
+}
+
 void open(char *filename)
 {
     FILE *file = fopen(filename, "r");
@@ -260,6 +273,59 @@ void scroll()
     }
 }
 
+void drawStatus(struct abuf *ab)
+{
+    abAppend(ab, "\x1b[7m", 4);
+    char status[80], rstatus[80];
+    char *language_symbol;
+
+    if (current_file_extension == NULL)
+    {
+        language_symbol = "󰈙";
+    }
+
+    else if (strcmp(current_file_extension, "c") == 0)
+    {
+        language_symbol = "";
+    }
+    else if (strcmp(current_file_extension, "cpp") == 0)
+    {
+        language_symbol = "";
+    }
+    else if (strcmp(current_file_extension, "py") == 0)
+    {
+        language_symbol = "";
+    }
+    else
+    {
+        language_symbol = "󰈙";
+    }
+
+    int len = snprintf(status, sizeof(status), "  Mat");
+
+    int rlen = snprintf(rstatus, sizeof(rstatus), "%s %s - %d/%d", language_symbol, filename, E.cy + 1, E.numRws);
+
+    if (len > E.screenCls)
+    {
+        len = E.screenCls;
+    }
+
+    abAppend(ab, status, len);
+
+    while (len < E.screenCls)
+    {
+        if (E.screenCls - len == rlen)
+        {
+            abAppend(ab, rstatus, rlen);
+            break;
+        }
+        abAppend(ab, " ", 1);
+        len++;
+    }
+
+    abAppend(ab, "\x1b[m", 3);
+}
+
 void drawRws(struct abuf *ab)
 {
     int y;
@@ -268,30 +334,30 @@ void drawRws(struct abuf *ab)
         int filerow = y + E.rowoff;
         if (filerow >= E.numRws)
         {
-            if (y == E.screenRws - 1)
-            {
-                char message[10];
-                int messageLen = snprintf(message, sizeof(message), "󰅨 Mat");
-                if (messageLen > E.screenCls)
-                    messageLen = E.screenCls;
-
-                int padding = 0;
-
-                if (padding)
-                {
-                    abAppend(ab, "~", 1);
-                    padding--;
-                }
-
-                while (padding--)
-                    abAppend(ab, " ", 1);
-
-                abAppend(ab, message, messageLen);
-            }
-            else
-            {
-                abAppend(ab, "~", 1);
-            }
+            // if (y == E.screenRws - 1)
+            // {
+            //     char message[10];
+            //     int messageLen = snprintf(message, sizeof(message), "󰅨 Mat");
+            //     if (messageLen > E.screenCls)
+            //         messageLen = E.screenCls;
+            //
+            //     int padding = 0;
+            //
+            //     if (padding)
+            //     {
+            //         abAppend(ab, "~", 1);
+            //         padding--;
+            //     }
+            //
+            //     while (padding--)
+            //         abAppend(ab, " ", 1);
+            //
+            //     abAppend(ab, message, messageLen);
+            // }
+            // else
+            // {
+            abAppend(ab, "~", 1);
+            // }
         }
         else
         {
@@ -306,10 +372,7 @@ void drawRws(struct abuf *ab)
             abAppend(ab, &E.row[filerow].render[E.coloff], len);
         }
         abAppend(ab, "\x1b[K", 3);
-        if (y < E.screenRws - 1)
-        {
-            abAppend(ab, "\r\n", 2);
-        }
+        abAppend(ab, "\r\n", 2);
     }
 }
 
@@ -323,6 +386,8 @@ void refreshScreen()
     abAppend(&ab, "\x1b[H", 3);
 
     drawRws(&ab);
+
+    drawStatus(&ab);
 
     char buf[32];
     snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 1, (E.rx - E.coloff) + 1);
@@ -433,17 +498,18 @@ void handleKeyPress()
         // TODO
         for (int y = 0; y < 4; y++)
         {
-            if (E.cy - 1 < E.screenRws)
+            if (E.cy - 1 <= E.numRws)
             {
                 moveCursor(KEY_K);
             }
         }
+
         break;
     case CTRL_KEY('d'):
         // TODO
         for (int y = 0; y < 4; y++)
         {
-            if (E.cy + 1 <= E.screenRws)
+            if (E.cy + 1 <= E.numRws)
             {
                 moveCursor(KEY_J);
             }
@@ -480,6 +546,7 @@ void init()
     {
         die("getWindowSize");
     }
+    E.screenRws -= 1;
 }
 
 int main(int argc, char *argv[])
@@ -489,7 +556,9 @@ int main(int argc, char *argv[])
 
     if (argc >= 2)
     {
-        open(argv[1]);
+        filename = argv[1];
+        open(filename);
+        current_file_extension = get_file_extension(filename);
     }
 
     while (1)
@@ -499,5 +568,6 @@ int main(int argc, char *argv[])
     }
 
     disableRawMode();
+
     return 0;
 }
