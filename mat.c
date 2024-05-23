@@ -38,7 +38,7 @@ typedef struct erow
 
 struct editorConfig
 {
-    int cx, cy;
+    int cx, cy, rx;
     int rowoff, coloff;
     int screenRws, screenCls;
     int numRws;
@@ -121,6 +121,20 @@ int getCursorPosition(int *rows, int *cols)
     if (sscanf(&buf[2], "%d;%d", rows, cols) != 2)
         return -1;
     return 0;
+}
+
+int rwsCxToRx(erow *row, int cx)
+{
+    int rx = 0;
+    for (int j = 0; j < cx; j++)
+    {
+        if (row->chars[j] == '\t')
+        {
+            rx += (MAT_TABSTOP - 1) - (rx % MAT_TABSTOP);
+        }
+        rx++;
+    }
+    return rx;
 }
 
 void updateRws(erow *row)
@@ -221,6 +235,12 @@ void abFree(struct abuf *ab) { free(ab->b); }
 // output
 void scroll()
 {
+    E.rx = 0;
+    if (E.cy < E.numRws)
+    {
+        E.rx = rwsCxToRx(&E.row[E.cy], E.cx);
+    }
+
     if (E.cy < E.rowoff)
     {
         E.rowoff = E.cy;
@@ -232,11 +252,11 @@ void scroll()
 
     if (E.cx < E.coloff)
     {
-        E.coloff = E.cx;
+        E.coloff = E.rx;
     }
     if (E.cx >= E.coloff + E.screenCls)
     {
-        E.coloff = E.cx - E.screenCls + 1;
+        E.coloff = E.rx - E.screenCls + 1;
     }
 }
 
@@ -305,7 +325,7 @@ void refreshScreen()
     drawRws(&ab);
 
     char buf[32];
-    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 1, (E.cx - E.coloff) + 1);
+    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 1, (E.rx - E.coloff) + 1);
     abAppend(&ab, buf, strlen(buf));
 
     abAppend(&ab, "\x1b[?25h", 6);
@@ -449,6 +469,7 @@ void init()
 {
     E.cx = 0;
     E.cy = 0;
+    E.cx = 0;
 
     E.numRws = 0;
     E.row = NULL;
