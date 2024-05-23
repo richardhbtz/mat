@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <termios.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <sys/ioctl.h>
@@ -11,6 +12,10 @@
 
 // defines
 #define CTRL_KEY(k) ((k) & 0x1f)
+#define MAT_VERSION "0.0.1"
+
+// globals
+int MAT_TABSTOP = 4;
 
 enum editorKey
 {
@@ -26,7 +31,9 @@ enum editorKey
 typedef struct erow
 {
     int size;
+    int rsize;
     char *chars;
+    char *render;
 } erow;
 
 struct editorConfig
@@ -115,6 +122,41 @@ int getCursorPosition(int *rows, int *cols)
         return -1;
     return 0;
 }
+
+void updateRws(erow *row)
+{
+    int tabs = 0;
+
+    int j;
+
+    for (j = 0; j < row->size; j++)
+        if (row->chars[j] == '\t')
+            tabs++;
+
+    free(row->render);
+    row->render = malloc(row->size + tabs * (MAT_TABSTOP - 1) + 1);
+
+    int idx = 0;
+
+    for (j = 0; j < row->size; j++)
+    {
+
+        if (row->chars[j] == '\t')
+        {
+            row->render[idx++] = ' ';
+            while (idx % MAT_TABSTOP != 0)
+            {
+                row->render[idx++] = ' ';
+            }
+        }
+        else
+            row->render[idx++] = row->chars[j];
+    }
+
+    row->render[idx] = '\0';
+    row->rsize = idx;
+}
+
 void appendRws(char *s, size_t len)
 {
     E.row = realloc(E.row, sizeof(erow) * (E.numRws + 1));
@@ -124,6 +166,11 @@ void appendRws(char *s, size_t len)
     E.row[at].chars = malloc(len + 1);
     memcpy(E.row[at].chars, s, len);
     E.row[at].chars[len] = '\0';
+
+    E.row[at].rsize = 0;
+    E.row[at].render = NULL;
+    updateRws(&E.row[at]);
+
     E.numRws++;
 }
 // file io
@@ -193,7 +240,7 @@ void scroll()
     }
 }
 
-void drawRows(struct abuf *ab)
+void drawRws(struct abuf *ab)
 {
     int y;
     for (y = 0; y < E.screenRws; y++)
@@ -228,14 +275,15 @@ void drawRows(struct abuf *ab)
         }
         else
         {
-            int len = E.row[filerow].size - E.coloff;
+            int len = E.row[filerow].rsize - E.coloff;
 
             if (len < 0)
                 len = 0;
 
             if (len > E.screenCls)
                 len = E.screenCls;
-            abAppend(ab, &E.row[filerow].chars[E.coloff], len);
+
+            abAppend(ab, &E.row[filerow].render[E.coloff], len);
         }
         abAppend(ab, "\x1b[K", 3);
         if (y < E.screenRws - 1)
@@ -254,7 +302,7 @@ void refreshScreen()
     abAppend(&ab, "\x1b[?25l", 6);
     abAppend(&ab, "\x1b[H", 3);
 
-    drawRows(&ab);
+    drawRws(&ab);
 
     char buf[32];
     snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 1, (E.cx - E.coloff) + 1);
