@@ -226,6 +226,16 @@ void appendRws(char *s, size_t len)
     E.dirty++;
 }
 
+void rwsDeleteChar(erow *row, int at)
+{
+    if (at < 0 || at >= row->size)
+        return;
+
+    memmove(&row->chars[at], &row->chars[at + 1], row->size - at);
+    row->size--;
+    updateRws(row);
+    E.dirty++;
+}
 void rwsInsertChar(erow *row, int at, int c)
 {
     if (at < 0 || at > row->size)
@@ -237,6 +247,54 @@ void rwsInsertChar(erow *row, int at, int c)
     row->size++;
     updateRws(row);
     E.dirty++;
+}
+
+void rwsAppendString(erow *row, char *s, size_t len)
+{
+    row->chars = realloc(row->chars, row->size + len + 1);
+    memcpy(&row->chars[row->size], s, len);
+    row->size += len;
+    row->chars[row->size] = '\0';
+    updateRws(row);
+    E.dirty++;
+}
+
+void freeRws(erow *row)
+{
+    free(row->render);
+    free(row->chars);
+}
+
+void delRws(int at)
+{
+    if (at < 0 || at >= E.numRws)
+        return;
+    freeRws(&E.row[at]);
+    memmove(&E.row[at], &E.row[at + 1], sizeof(erow) * (E.numRws - at - 1));
+    E.numRws--;
+    E.dirty++;
+}
+
+void deleteChar()
+{
+    if (E.cy == E.numRws)
+        return;
+    if (E.cx == 0 && E.cy == 0)
+        return;
+
+    erow *row = &E.row[E.cy];
+    if (E.cx > 0)
+    {
+        rwsDeleteChar(row, E.cx - 1);
+        E.cx--;
+    }
+    else
+    {
+        E.cx = E.row[E.cy - 1].size;
+        rwsAppendString(&E.row[E.cy - 1], row->chars, row->size);
+        delRws(E.cy);
+        E.cy--;
+    }
 }
 
 void insertChar(int c)
@@ -676,10 +734,11 @@ void handleKeyPress()
         switch (c)
         {
 
-        case CTRL_KEY('l'):
         case '\x1b':
         case '\r':
+            break;
         case BACKSPACE:
+            deleteChar();
             break;
 
         default:
