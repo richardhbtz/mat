@@ -236,6 +236,7 @@ void rwsInsertChar(erow *row, int at, int c)
     row->chars[at] = c;
     row->size++;
     updateRws(row);
+    E.dirty++;
 }
 
 void insertChar(int c)
@@ -476,6 +477,7 @@ void save()
     fclose(file);
 
     setStatusMessage("File saved: %s", current_filename);
+    E.dirty = 0;
 }
 
 void refreshScreen()
