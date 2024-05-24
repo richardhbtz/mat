@@ -17,6 +17,9 @@
 
 // defines
 #define CTRL_KEY(k) ((k) & 0x1f)
+
+#define KEY_ESC_C 27
+
 #define MAT_VERSION "0.0.1"
 
 // globals
@@ -25,6 +28,13 @@ int MAT_TABSTOP = 4;
 char *current_file_extension;
 char *current_filename;
 
+enum mode
+{
+    NORMAL,
+    INSERT,
+    VISUAL
+};
+
 enum key
 {
     KEY_K,
@@ -32,7 +42,13 @@ enum key
     KEY_L,
     KEY_H,
 
-    KEY_X
+    KEY_I = 'i',
+    KEY_V,
+    KEY_ESC,
+
+    KEY_X,
+
+    KEY_Q,
 };
 
 // data
@@ -44,7 +60,7 @@ typedef struct erow
     char *render;
 } erow;
 
-struct editorConfig
+struct config
 {
     int cx, cy, rx;
     int rowoff, coloff;
@@ -52,13 +68,15 @@ struct editorConfig
     int numRws;
     erow *row;
 
+    enum mode current_mode;
+
     char statusmsg[80];
     time_t statusmsg_time;
 
     struct termios orig_termios;
 };
 
-struct editorConfig E;
+struct config E;
 
 // terminal
 void die(const char *s)
@@ -313,9 +331,10 @@ void drawStatus(struct abuf *ab)
     else
         language_symbol = "󰈙";
 
-    int len = snprintf(status, sizeof(status), "  Mat");
+    int len = snprintf(status, sizeof(status), "  Mat | %s ", E.current_mode == NORMAL ? "NORMAL" : "INSERT");
+
     int rlen = snprintf(rstatus, sizeof(rstatus), "%s %s - %d/%d",
-                        language_symbol, current_filename, E.cy + 1, E.numRws);
+                        language_symbol, current_filename, E.cy, E.numRws);
 
     if (len > E.screenCls)
         len = E.screenCls;
@@ -348,30 +367,7 @@ void drawRws(struct abuf *ab)
         int filerow = y + E.rowoff;
         if (filerow >= E.numRws)
         {
-            // if (y == E.screenRws - 1)
-            // {
-            //     char message[10];
-            //     int messageLen = snprintf(message, sizeof(message), "󰅨 Mat");
-            //     if (messageLen > E.screenCls)
-            //         messageLen = E.screenCls;
-            //
-            //     int padding = 0;
-            //
-            //     if (padding)
-            //     {
-            //         abAppend(ab, "~", 1);
-            //         padding--;
-            //     }
-            //
-            //     while (padding--)
-            //         abAppend(ab, " ", 1);
-            //
-            //     abAppend(ab, message, messageLen);
-            // }
-            // else
-            // {
             abAppend(ab, "~", 1);
-            // }
         }
         else
         {
@@ -442,18 +438,21 @@ void moveCursor(int key)
             E.cx = E.row[E.cy].size;
         }
         break;
+
     case KEY_J: // DOWN
         if (E.cy < E.numRws)
         {
             E.cy++;
         }
         break;
+
     case KEY_H: // LEFT
         if (E.cx != 0)
         {
             E.cx--;
         }
         break;
+
     case KEY_L: // RIGHT
         if (row && E.cx < row->size)
         {
@@ -473,6 +472,7 @@ void moveCursor(int key)
         E.cx = rowlen;
     }
 }
+
 int readKey()
 {
     int nread;
@@ -484,15 +484,16 @@ int readKey()
     }
     if (c == '\x1b')
     {
-        char seq[3];
-        if (read(STDIN_FILENO, &seq[0], 1) != 1)
-            return '\x1b';
-        if (read(STDIN_FILENO, &seq[1], 1) != 1)
-            return '\x1b';
+        char seq[2];
+
+        if (read(STDIN_FILENO, &seq[0], 1) == 0)
+            return KEY_ESC_C;
+
         if (seq[0] == '[')
         {
         }
-        return '\x1b';
+
+        return -1;
     }
     else
     {
@@ -506,6 +507,16 @@ int readKey()
             return KEY_H;
         case 'l':
             return KEY_L;
+
+        case 'q':
+            return KEY_Q;
+
+        case 'i':
+            return KEY_I;
+
+        case 'v':
+            return KEY_V;
+
         case 'x':
             return KEY_X;
         }
@@ -540,10 +551,28 @@ void handleKeyPress()
             }
         }
         break;
-    case CTRL_KEY('q'):
-        write(STDOUT_FILENO, "\x1b[2J", 4);
-        write(STDOUT_FILENO, "\x1b[H", 3);
-        exit(0);
+
+    case KEY_I:
+        if (E.current_mode == NORMAL)
+        {
+            E.current_mode = INSERT;
+        }
+        break;
+
+    case KEY_ESC_C:
+        if (E.current_mode == INSERT)
+        {
+            E.current_mode = NORMAL;
+        }
+        break;
+
+    case KEY_Q:
+        if (E.current_mode != INSERT)
+        {
+            write(STDOUT_FILENO, "\x1b[2J", 4);
+            write(STDOUT_FILENO, "\x1b[H", 3);
+            exit(0);
+        }
         break;
 
     case KEY_K:
@@ -566,6 +595,7 @@ void init()
     E.row = NULL;
     E.rowoff = 0;
     E.coloff = 0;
+    E.current_mode = NORMAL;
 
     E.statusmsg[0] = '\0';
     E.statusmsg_time = 0;
