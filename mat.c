@@ -3,7 +3,7 @@
 #define _DEFAULT_SOURCE
 #define _BSD_SOURCE
 #define _GNU_SOURCE
-
+// asoidjasodijasoidjaoisdjqa
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -41,12 +41,14 @@ enum key
 {
     BACKSPACE = 127,
 
+    KEY_SLASH = '/',
     KEY_K = 'k',
     KEY_J = 'j',
     KEY_L = 'l',
     KEY_H = 'h',
 
     KEY_I = 'i',
+    KEY_A = 'a',
     KEY_V = 'v',
 
     KEY_X = 'x',
@@ -87,7 +89,7 @@ struct config E;
 int readKey();
 void setStatusMessage(const char *fmt, ...);
 void refreshScreen();
-char *prompt(char *prompt);
+char *prompt(char *prompt, void (*callback)(char *, int));
 
 // terminal
 void die(const char *s)
@@ -161,6 +163,22 @@ int getCursorPosition(int *rows, int *cols)
     if (sscanf(&buf[2], "%d;%d", rows, cols) != 2)
         return -1;
     return 0;
+}
+
+int rwsRxToCx(erow *row, int rx)
+{
+    int cur_rx = 0;
+    int cx;
+    for (cx = 0; cx < row->size; cx++)
+    {
+        if (row->chars[cx] == '\t')
+            cur_rx += (MAT_TABSTOP - 1) - (cur_rx % MAT_TABSTOP);
+
+        cur_rx++;
+        if (cur_rx > rx)
+            return cx;
+    }
+    return cx;
 }
 
 int rwsCxToRx(erow *row, int cx)
@@ -529,6 +547,22 @@ void drawRws(struct abuf *ab)
 
             if (len > E.screenCls)
                 len = E.screenCls;
+            char *c = &E.row[filerow].render[E.colOff];
+            int j;
+
+            for (j = 0; j < len; j++)
+            {
+                if (c[j] == '\t')
+                {
+                    abAppend(ab, "\x1b[7m", 4);
+                    abAppend(ab, " ", 1);
+                    abAppend(ab, "\x1b[m", 3);
+                }
+                else
+                {
+                    abAppend(ab, &c[j], 1);
+                }
+            }
 
             abAppend(ab, &E.row[filerow].render[E.colOff], len);
         }
@@ -537,10 +571,66 @@ void drawRws(struct abuf *ab)
     }
 }
 
+void searchCallback(char *query, int key)
+{
+    static int last_match = -1;
+    static int direction = 1;
+
+    if (key == '\r' || key == '\n')
+    {
+        last_match = -1;
+        direction = 1;
+        return;
+    }
+
+    for (int i = 0; i < E.numRws; i++)
+    {
+        erow *row = &E.row[i];
+        char *match = strstr(row->render, query);
+        if (match)
+        {
+            E.cy = i;
+            E.cx = rwsRxToCx(row, match - row->render);
+            E.rowOff = E.numRws;
+            break;
+        }
+    }
+}
+
+void search()
+{
+    int saved_cx = E.cx;
+    int saved_cy = E.cy;
+    int saved_colOff = E.colOff;
+    int saved_rowOff = E.rowOff;
+
+    char *query = prompt("/", searchCallback);
+
+    if (query)
+        free(query);
+    else
+    {
+        E.cy = saved_cy;
+        E.cx = saved_cx;
+        E.colOff = saved_colOff;
+        E.rowOff = saved_rowOff;
+    }
+}
+
 void save()
 {
     if (current_filename == NULL)
         return;
+
+    if (E.dirty)
+    {
+        char *response = prompt("File not saved. Save? (y/n) ", NULL);
+        if (strcmp(response, "y") != 0)
+        {
+            free(response);
+            return;
+        }
+    }
 
     int len;
     char *buf = rwsToString(&len);
@@ -571,7 +661,6 @@ void refreshScreen()
     scroll();
 
     struct abuf ab = ABUF_INIT;
-
     abAppend(&ab, "\x1b[?25l", 6);
     abAppend(&ab, "\x1b[H", 3);
 
@@ -592,21 +681,36 @@ void refreshScreen()
 }
 
 // input
-char *prompt(char *prompt)
+char *prompt(char *prompt, void (*callback)(char *, int))
 {
+    E.current_mode = INSERT;
+
     size_t bufsize = 128;
     char *buf = malloc(bufsize);
 
     size_t buflen = 0;
+    buf[0] = '\0';
+
     while (1)
     {
         setStatusMessage(prompt, buf);
         refreshScreen();
 
         int c = readKey();
-        if (c == '\x1b')
+        if (c == BACKSPACE)
+        {
+            if (buflen != 0)
+                buf[--buflen] = '\0';
+        }
+        else if (c == '\x1b')
         {
             setStatusMessage("");
+
+            E.current_mode = NORMAL;
+
+            if (callback)
+                callback(buf, c);
+
             free(buf);
             return NULL;
         }
@@ -615,6 +719,12 @@ char *prompt(char *prompt)
             if (buflen != 0)
             {
                 setStatusMessage("");
+
+                E.current_mode = NORMAL;
+
+                if (callback)
+                    callback(buf, c);
+
                 return buf;
             }
         }
@@ -622,12 +732,18 @@ char *prompt(char *prompt)
         {
             if (buflen == bufsize - 1)
             {
-                bufsize += 2;
+                bufsize *= 2;
                 buf = realloc(buf, bufsize);
             }
+
             buf[buflen++] = c;
             buf[buflen] = '\0';
         }
+
+        E.current_mode = NORMAL;
+
+        if (callback)
+            callback(buf, c);
     }
 }
 void moveCursor(int key)
@@ -708,6 +824,9 @@ int readKey()
     {
         switch (c)
         {
+
+        case '/':
+            return KEY_SLASH;
         case 'k':
             return KEY_K;
         case 'j':
@@ -750,6 +869,7 @@ void handleKeyPress()
     {
         switch (c)
         {
+
         case CTRL_KEY('s'):
             save();
             break;
@@ -783,8 +903,21 @@ void handleKeyPress()
             }
             break;
 
+        case KEY_X:
+            deleteChar();
+            break;
+
+        case KEY_A:
+            moveCursor(KEY_L);
+            E.current_mode = INSERT;
+            break;
+
         case KEY_I:
             E.current_mode = INSERT;
+            break;
+
+        case KEY_SLASH:
+            search();
             break;
 
         case KEY_K:
@@ -799,7 +932,6 @@ void handleKeyPress()
     else
         switch (c)
         {
-
         case '\x1b':
             break;
         case '\r':
