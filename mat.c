@@ -1,4 +1,5 @@
 // includes
+#include <ctype.h>
 #define _DEFAULT_SOURCE
 #define _BSD_SOURCE
 #define _GNU_SOURCE
@@ -83,7 +84,10 @@ struct config
 struct config E;
 
 // proto
+int readKey();
 void setStatusMessage(const char *fmt, ...);
+void refreshScreen();
+char *prompt(char *prompt);
 
 // terminal
 void die(const char *s)
@@ -208,11 +212,14 @@ void updateRws(erow *row)
 }
 
 // operations
-void appendRws(char *s, size_t len)
+void insertRws(int at, char *s, size_t len)
 {
-    E.row = realloc(E.row, sizeof(erow) * (E.numRws + 1));
+    if (at < 0 || at > E.numRws)
+        return;
 
-    int at = E.numRws;
+    E.row = realloc(E.row, sizeof(erow) * (E.numRws + 1));
+    memmove(&E.row[at + 1], &E.row[at], sizeof(erow) * (E.numRws - at));
+
     E.row[at].size = len;
     E.row[at].chars = malloc(len + 1);
     memcpy(E.row[at].chars, s, len);
@@ -224,6 +231,26 @@ void appendRws(char *s, size_t len)
 
     E.numRws++;
     E.dirty++;
+}
+
+void insertNewLine()
+{
+    if (E.cx == 0)
+    {
+        insertRws(E.cy, "", 0);
+    }
+    else
+    {
+        erow *row = &E.row[E.cy];
+        insertRws(E.cy + 1, row->chars + E.cx, row->size - E.cx);
+        row = &E.row[E.cy];
+        row->size = E.cx;
+        row->chars[row->size] = '\0';
+        updateRws(row);
+    }
+
+    E.cy++;
+    E.cx = 0;
 }
 
 void rwsDeleteChar(erow *row, int at)
@@ -301,8 +328,9 @@ void insertChar(int c)
 {
     if (E.cy == E.numRws)
     {
-        appendRws("", 0);
+        insertRws(E.numRws, "", 0);
     }
+
     rwsInsertChar(&E.row[E.cy], E.cx, c);
     E.cx++;
 }
@@ -355,7 +383,7 @@ void open(char *filename)
         while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
         {
             len--;
-            appendRws(line, len);
+            insertRws(E.numRws, line, len);
         }
     }
 
@@ -564,6 +592,44 @@ void refreshScreen()
 }
 
 // input
+char *prompt(char *prompt)
+{
+    size_t bufsize = 128;
+    char *buf = malloc(bufsize);
+
+    size_t buflen = 0;
+    while (1)
+    {
+        setStatusMessage(prompt, buf);
+        refreshScreen();
+
+        int c = readKey();
+        if (c == '\x1b')
+        {
+            setStatusMessage("");
+            free(buf);
+            return NULL;
+        }
+        else if (c == '\r')
+        {
+            if (buflen != 0)
+            {
+                setStatusMessage("");
+                return buf;
+            }
+        }
+        else if (!iscntrl(c) && c < 128)
+        {
+            if (buflen == bufsize - 1)
+            {
+                bufsize += 2;
+                buf = realloc(buf, bufsize);
+            }
+            buf[buflen++] = c;
+            buf[buflen] = '\0';
+        }
+    }
+}
 void moveCursor(int key)
 {
     erow *row = (E.cy >= E.numRws) ? NULL : &E.row[E.cy];
@@ -735,8 +801,11 @@ void handleKeyPress()
         {
 
         case '\x1b':
-        case '\r':
             break;
+        case '\r':
+            insertNewLine();
+            break;
+
         case BACKSPACE:
             deleteChar();
             break;
