@@ -1,10 +1,10 @@
 // includes
-#include <stdarg.h>
 #define _DEFAULT_SOURCE
 #define _BSD_SOURCE
 #define _GNU_SOURCE
 
 #include <errno.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,7 +18,8 @@
 // defines
 #define CTRL_KEY(k) ((k) & 0x1f)
 
-#define KEY_ESC_C 27
+#define KEY_ESC 27
+#define ESC_K -1
 
 #define MAT_VERSION "0.0.1"
 
@@ -37,18 +38,19 @@ enum mode
 
 enum key
 {
-    KEY_K,
-    KEY_J,
-    KEY_L,
-    KEY_H,
+    BACKSPACE = 127,
+
+    KEY_K = 'k',
+    KEY_J = 'j',
+    KEY_L = 'l',
+    KEY_H = 'h',
 
     KEY_I = 'i',
-    KEY_V,
-    KEY_ESC,
+    KEY_V = 'v',
 
-    KEY_X,
+    KEY_X = 'x',
 
-    KEY_Q,
+    KEY_Q = 'q',
 };
 
 // data
@@ -63,10 +65,12 @@ typedef struct erow
 struct config
 {
     int cx, cy, rx;
-    int rowoff, coloff;
+    int rowOff, colOff;
     int screenRws, screenCls;
     int numRws;
     erow *row;
+
+    int dirty;
 
     enum mode current_mode;
 
@@ -77,6 +81,9 @@ struct config
 };
 
 struct config E;
+
+// proto
+void setStatusMessage(const char *fmt, ...);
 
 // terminal
 void die(const char *s)
@@ -200,6 +207,7 @@ void updateRws(erow *row)
     row->rsize = idx;
 }
 
+// operations
 void appendRws(char *s, size_t len)
 {
     E.row = realloc(E.row, sizeof(erow) * (E.numRws + 1));
@@ -215,9 +223,54 @@ void appendRws(char *s, size_t len)
     updateRws(&E.row[at]);
 
     E.numRws++;
+    E.dirty++;
+}
+
+void rwsInsertChar(erow *row, int at, int c)
+{
+    if (at < 0 || at > row->size)
+        at = row->size;
+
+    row->chars = realloc(row->chars, row->size + 2);
+    memmove(&row->chars[at + 1], &row->chars[at], row->size - at + 1);
+    row->chars[at] = c;
+    row->size++;
+    updateRws(row);
+}
+
+void insertChar(int c)
+{
+    if (E.cy == E.numRws)
+    {
+        appendRws("", 0);
+    }
+    rwsInsertChar(&E.row[E.cy], E.cx, c);
+    E.cx++;
 }
 
 // file io
+char *rwsToString(int *buflen)
+{
+    int totlen = 0;
+    int j;
+    for (j = 0; j < E.numRws; j++)
+    {
+        totlen += E.row[j].size + 1;
+    }
+
+    *buflen = totlen;
+
+    char *buf = malloc(totlen);
+    char *p = buf;
+    for (j = 0; j < E.numRws; j++)
+    {
+        memcpy(p, E.row[j].chars, E.row[j].size);
+        p += E.row[j].size;
+        *p = '\n';
+        p++;
+    }
+    return buf;
+}
 char *get_file_extension(const char *filename)
 {
     char *dot = strrchr(filename, '.');
@@ -249,6 +302,8 @@ void open(char *filename)
 
     free(line);
     fclose(file);
+
+    E.dirty = 0;
 }
 
 // append buffer
@@ -281,23 +336,32 @@ void scroll()
         E.rx = rwsCxToRx(&E.row[E.cy], E.cx);
     }
 
-    if (E.cy < E.rowoff)
+    if (E.cy < E.rowOff)
     {
-        E.rowoff = E.cy;
+        E.rowOff = E.cy;
     }
-    if (E.cy >= E.rowoff + E.screenRws)
+    if (E.cy >= E.rowOff + E.screenRws)
     {
-        E.rowoff = E.cy - E.screenRws + 1;
+        E.rowOff = E.cy - E.screenRws + 1;
     }
 
-    if (E.cx < E.coloff)
+    if (E.cx < E.colOff)
     {
-        E.coloff = E.rx;
+        E.colOff = E.rx;
     }
-    if (E.cx >= E.coloff + E.screenCls)
+    if (E.cx >= E.colOff + E.screenCls)
     {
-        E.coloff = E.rx - E.screenCls + 1;
+        E.colOff = E.rx - E.screenCls + 1;
     }
+}
+
+void setStatusMessage(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(E.statusmsg, sizeof(E.statusmsg), fmt, ap);
+    va_end(ap);
+    E.statusmsg_time = time(NULL);
 }
 
 void drawMessage(struct abuf *ab)
@@ -333,8 +397,8 @@ void drawStatus(struct abuf *ab)
 
     int len = snprintf(status, sizeof(status), "  Mat | %s ", E.current_mode == NORMAL ? "NORMAL" : "INSERT");
 
-    int rlen = snprintf(rstatus, sizeof(rstatus), "%s %s - %d/%d",
-                        language_symbol, current_filename, E.cy, E.numRws);
+    int rlen = snprintf(rstatus, sizeof(rstatus), "%s %s%s - %d/%d",
+                        language_symbol, current_filename, E.dirty ? " *" : "", E.cy, E.numRws);
 
     if (len > E.screenCls)
         len = E.screenCls;
@@ -364,14 +428,14 @@ void drawRws(struct abuf *ab)
     int y;
     for (y = 0; y < E.screenRws; y++)
     {
-        int filerow = y + E.rowoff;
+        int filerow = y + E.rowOff;
         if (filerow >= E.numRws)
         {
             abAppend(ab, "~", 1);
         }
         else
         {
-            int len = E.row[filerow].rsize - E.coloff;
+            int len = E.row[filerow].rsize - E.colOff;
 
             if (len < 0)
                 len = 0;
@@ -379,20 +443,39 @@ void drawRws(struct abuf *ab)
             if (len > E.screenCls)
                 len = E.screenCls;
 
-            abAppend(ab, &E.row[filerow].render[E.coloff], len);
+            abAppend(ab, &E.row[filerow].render[E.colOff], len);
         }
         abAppend(ab, "\x1b[K", 3);
         abAppend(ab, "\r\n", 2);
     }
 }
 
-void setStatusMessage(const char *fmt, ...)
+void save()
 {
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(E.statusmsg, sizeof(E.statusmsg), fmt, ap);
-    va_end(ap);
-    E.statusmsg_time = time(NULL);
+    if (current_filename == NULL)
+        return;
+
+    int len;
+    char *buf = rwsToString(&len);
+
+    FILE *file = fopen(current_filename, "w");
+    if (!file)
+    {
+        setStatusMessage("Failed to open file for writing: %s", strerror(errno));
+        return;
+    }
+
+    if (fwrite(buf, len, 1, file) != 1)
+    {
+        setStatusMessage("Failed to write file: %s", strerror(errno));
+        fclose(file);
+        return;
+    }
+
+    free(buf);
+    fclose(file);
+
+    setStatusMessage("File saved: %s", current_filename);
 }
 
 void refreshScreen()
@@ -409,8 +492,8 @@ void refreshScreen()
     drawMessage(&ab);
 
     char buf[32];
-    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 1,
-             (E.rx - E.coloff) + 1);
+    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowOff) + 1,
+             (E.rx - E.colOff) + 1);
 
     abAppend(&ab, buf, strlen(buf));
 
@@ -485,15 +568,15 @@ int readKey()
     if (c == '\x1b')
     {
         char seq[2];
-
         if (read(STDIN_FILENO, &seq[0], 1) == 0)
-            return KEY_ESC_C;
-
-        if (seq[0] == '[')
         {
+            return KEY_ESC;
         }
-
-        return -1;
+        else
+        {
+            read(STDIN_FILENO, &seq[1], 1);
+            return -1;
+        }
     }
     else
     {
@@ -528,60 +611,79 @@ void handleKeyPress()
 {
     int c = readKey();
 
-    switch (c)
+    if (c == ESC_K)
+        return;
+
+    if (c == KEY_ESC && E.current_mode == INSERT)
     {
-    case CTRL_KEY('u'):
-        // TODO
-        for (int y = 0; y < 4; y++)
-        {
-            if (E.cy - 1 <= E.numRws)
-            {
-                moveCursor(KEY_K);
-            }
-        }
-
-        break;
-    case CTRL_KEY('d'):
-        // TODO
-        for (int y = 0; y < 4; y++)
-        {
-            if (E.cy + 1 <= E.numRws)
-            {
-                moveCursor(KEY_J);
-            }
-        }
-        break;
-
-    case KEY_I:
-        if (E.current_mode == NORMAL)
-        {
-            E.current_mode = INSERT;
-        }
-        break;
-
-    case KEY_ESC_C:
-        if (E.current_mode == INSERT)
-        {
-            E.current_mode = NORMAL;
-        }
-        break;
-
-    case KEY_Q:
-        if (E.current_mode != INSERT)
-        {
-            write(STDOUT_FILENO, "\x1b[2J", 4);
-            write(STDOUT_FILENO, "\x1b[H", 3);
-            exit(0);
-        }
-        break;
-
-    case KEY_K:
-    case KEY_J:
-    case KEY_H:
-    case KEY_L:
-        moveCursor(c);
-        break;
+        E.current_mode = NORMAL;
+        return;
     }
+
+    if (E.current_mode == NORMAL)
+    {
+        switch (c)
+        {
+        case CTRL_KEY('s'):
+            save();
+            break;
+
+        case CTRL_KEY('u'):
+            for (int y = 0; y < 4; y++)
+            {
+                if (E.cy - 1 <= E.numRws)
+                {
+                    moveCursor(KEY_K);
+                }
+            }
+
+            break;
+        case CTRL_KEY('d'):
+            for (int y = 0; y < 4; y++)
+            {
+                if (E.cy + 1 <= E.numRws)
+                {
+                    moveCursor(KEY_J);
+                }
+            }
+            break;
+
+        case KEY_Q:
+            if (E.current_mode != INSERT)
+            {
+                write(STDOUT_FILENO, "\x1b[2J", 4);
+                write(STDOUT_FILENO, "\x1b[H", 3);
+                exit(0);
+            }
+            break;
+
+        case KEY_I:
+            E.current_mode = INSERT;
+            break;
+
+        case KEY_K:
+        case KEY_J:
+        case KEY_H:
+        case KEY_L:
+            moveCursor(c);
+            break;
+        }
+    }
+
+    else
+        switch (c)
+        {
+
+        case CTRL_KEY('l'):
+        case '\x1b':
+        case '\r':
+        case BACKSPACE:
+            break;
+
+        default:
+            insertChar(c);
+            break;
+        }
 }
 
 // init
@@ -591,10 +693,13 @@ void init()
     E.cy = 0;
     E.cx = 0;
 
-    E.numRws = 0;
     E.row = NULL;
-    E.rowoff = 0;
-    E.coloff = 0;
+
+    E.numRws = 0;
+    E.rowOff = 0;
+    E.colOff = 0;
+    E.dirty = 0;
+
     E.current_mode = NORMAL;
 
     E.statusmsg[0] = '\0';
