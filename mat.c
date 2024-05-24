@@ -41,6 +41,7 @@ enum highlight
 {
     HL_NORMAL = 0,
     HL_COMMENT,
+    HL_MLCOMMENT,
     HL_KEYWORD1,
     HL_KEYWORD2,
     HL_STRING,
@@ -70,11 +71,13 @@ enum key
 // data
 typedef struct erow
 {
+    int idx;
     int size;
     int rsize;
     char *chars;
     char *render;
     unsigned char *hl;
+    int hl_open_comment;
 } erow;
 
 struct config
@@ -108,6 +111,8 @@ struct syntax
 
     char **keywords;
     char *singleline_comment_start;
+    char *multiline_comment_start;
+    char *multiline_comment_end;
 
     int flags;
 };
@@ -118,14 +123,17 @@ char *C_HL_extensions[] = {".c", ".h", ".cpp"};
 char *C_HL_keywords[] = {
     "switch", "if", "while", "for", "break", "continue", "return", "else",
     "struct", "union", "typedef", "static", "enum", "class", "case",
+
     "int|", "long|", "double|", "float|", "char|", "unsigned|", "signed|",
-    "void|", NULL};
+    "void|", "struct|", "enum|", "const|", "#define|", "#include", NULL};
 
 struct syntax HLDB[] = {
     {"c",
      C_HL_extensions,
      C_HL_keywords,
-     "//", HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS},
+     "//",
+     "/*", "*/",
+     HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS},
 };
 
 #define HLDB_ENTRIES (sizeof(HLDB) / sizeof(HLDB[0]))
@@ -228,10 +236,16 @@ void updateSyntax(erow *row)
     char **keywords = E.syntax->keywords;
 
     char *scs = E.syntax->singleline_comment_start;
+    char *mcs = E.syntax->multiline_comment_start;
+    char *mce = E.syntax->multiline_comment_end;
+
     int scs_len = scs ? strlen(scs) : 0;
+    int mcs_len = mcs ? strlen(mcs) : 0;
+    int mce_len = mce ? strlen(mce) : 0;
 
     int prev_sep = 1;
     int in_string = 0;
+    int in_comment = (row->idx > 0 && E.row[row->idx - 1].hl_open_comment);
 
     int i = 0;
     while (i < row->rsize)
@@ -239,12 +253,40 @@ void updateSyntax(erow *row)
         char c = row->render[i];
         unsigned char prev_hl = (i > 0) ? row->hl[i - 1] : HL_NORMAL;
 
-        if (scs_len && !in_string)
+        if (scs_len && !in_string && !in_comment)
         {
             if (!strncmp(&row->render[i], scs, scs_len))
             {
                 memset(&row->hl[i], HL_COMMENT, row->rsize - i);
                 break;
+            }
+        }
+
+        if (mcs_len && mce_len && !in_string)
+        {
+            if (in_comment)
+            {
+                row->hl[i] = HL_MLCOMMENT;
+                if (!strncmp(&row->render[i], mce, mce_len))
+                {
+                    memset(&row->hl[i], HL_MLCOMMENT, mce_len);
+                    i += mce_len;
+                    in_comment = 0;
+                    prev_sep = 1;
+                    continue;
+                }
+                else
+                {
+                    i++;
+                    continue;
+                }
+            }
+            else if (!strncmp(&row->render[i], mcs, mcs_len))
+            {
+                memset(&row->hl[i], HL_MLCOMMENT, mcs_len);
+                i += mcs_len;
+                in_comment = 1;
+                continue;
             }
         }
 
@@ -318,6 +360,10 @@ void updateSyntax(erow *row)
         prev_sep = is_separator(c);
         i++;
     }
+    int changed = (row->hl_open_comment != in_comment);
+    row->hl_open_comment = in_comment;
+    if (changed && row->idx + 1 < E.numRws)
+        updateSyntax(&E.row[row->idx + 1]);
 }
 
 int syntaxToColor(int hl)
@@ -325,6 +371,7 @@ int syntaxToColor(int hl)
     switch (hl)
     {
     case HL_COMMENT:
+    case HL_MLCOMMENT:
         return 36;
     case HL_KEYWORD1:
         return 33;
@@ -450,12 +497,16 @@ void insertRws(int at, char *s, size_t len)
     E.row = realloc(E.row, sizeof(erow) * (E.numRws + 1));
     memmove(&E.row[at + 1], &E.row[at], sizeof(erow) * (E.numRws - at));
 
+    for (int j = at + 1; j <= E.numRws; j++)
+        E.row[j].idx++;
+
     E.row[at].size = len;
     E.row[at].chars = malloc(len + 1);
     memcpy(E.row[at].chars, s, len);
     E.row[at].chars[len] = '\0';
 
     E.row[at].rsize = 0;
+    E.row[at].hl_open_comment = 0;
     E.row[at].render = NULL;
     E.row[at].hl = NULL;
 
@@ -525,12 +576,15 @@ void freeRws(erow *row)
     free(row->hl);
 }
 
-void delRws(int at)
+void deleteRws(int at)
 {
     if (at < 0 || at >= E.numRws)
         return;
     freeRws(&E.row[at]);
     memmove(&E.row[at], &E.row[at + 1], sizeof(erow) * (E.numRws - at - 1));
+    for (int j = at; j < E.numRws - 1; j++)
+        E.row[j].idx--;
+
     E.numRws--;
     E.dirty++;
 }
@@ -552,7 +606,7 @@ void deleteChar()
     {
         E.cx = E.row[E.cy - 1].size;
         rwsAppendString(&E.row[E.cy - 1], row->chars, row->size);
-        delRws(E.cy);
+        deleteRws(E.cy);
         E.cy--;
     }
 }
