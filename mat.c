@@ -1,4 +1,9 @@
 // includes
+#include <stdarg.h>
+#define _DEFAULT_SOURCE
+#define _BSD_SOURCE
+#define _GNU_SOURCE
+
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,7 +25,7 @@ int MAT_TABSTOP = 4;
 char *current_file_extension;
 char *current_filename;
 
-enum editorKey
+enum key
 {
     KEY_K,
     KEY_J,
@@ -46,6 +51,9 @@ struct editorConfig
     int screenRws, screenCls;
     int numRws;
     erow *row;
+
+    char statusmsg[80];
+    time_t statusmsg_time;
 
     struct termios orig_termios;
 };
@@ -274,6 +282,20 @@ void scroll()
     }
 }
 
+void drawMessage(struct abuf *ab)
+{
+    abAppend(ab, "\x1b[K", 3);
+    int msglen = strlen(E.statusmsg);
+
+    if (msglen > E.screenCls)
+        msglen = E.screenCls;
+
+    if (msglen && time(NULL) - E.statusmsg_time < 5)
+    {
+        abAppend(ab, E.statusmsg, msglen);
+    }
+}
+
 void drawStatus(struct abuf *ab)
 {
     abAppend(ab, "\x1b[7m", 4);
@@ -281,35 +303,22 @@ void drawStatus(struct abuf *ab)
     char *language_symbol;
 
     if (current_file_extension == NULL)
-    {
         language_symbol = "󰈙";
-    }
-
     else if (strcmp(current_file_extension, "c") == 0)
-    {
         language_symbol = "";
-    }
     else if (strcmp(current_file_extension, "cpp") == 0)
-    {
         language_symbol = "";
-    }
     else if (strcmp(current_file_extension, "py") == 0)
-    {
         language_symbol = "";
-    }
     else
-    {
         language_symbol = "󰈙";
-    }
 
     int len = snprintf(status, sizeof(status), "  Mat");
-
-    int rlen = snprintf(rstatus, sizeof(rstatus), "%s %s - %d/%d", language_symbol, current_filename, E.cy + 1, E.numRws);
+    int rlen = snprintf(rstatus, sizeof(rstatus), "%s %s - %d/%d",
+                        language_symbol, current_filename, E.cy + 1, E.numRws);
 
     if (len > E.screenCls)
-    {
         len = E.screenCls;
-    }
 
     abAppend(ab, status, len);
 
@@ -320,11 +329,15 @@ void drawStatus(struct abuf *ab)
             abAppend(ab, rstatus, rlen);
             break;
         }
-        abAppend(ab, " ", 1);
-        len++;
+        else
+        {
+            abAppend(ab, " ", 1);
+            len++;
+        }
     }
 
     abAppend(ab, "\x1b[m", 3);
+    abAppend(ab, "\r\n", 2);
 }
 
 void drawRws(struct abuf *ab)
@@ -377,6 +390,15 @@ void drawRws(struct abuf *ab)
     }
 }
 
+void setStatusMessage(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(E.statusmsg, sizeof(E.statusmsg), fmt, ap);
+    va_end(ap);
+    E.statusmsg_time = time(NULL);
+}
+
 void refreshScreen()
 {
     scroll();
@@ -387,11 +409,13 @@ void refreshScreen()
     abAppend(&ab, "\x1b[H", 3);
 
     drawRws(&ab);
-
     drawStatus(&ab);
+    drawMessage(&ab);
 
     char buf[32];
-    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 1, (E.rx - E.coloff) + 1);
+    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 1,
+             (E.rx - E.coloff) + 1);
+
     abAppend(&ab, buf, strlen(buf));
 
     abAppend(&ab, "\x1b[?25h", 6);
@@ -543,11 +567,15 @@ void init()
     E.rowoff = 0;
     E.coloff = 0;
 
+    E.statusmsg[0] = '\0';
+    E.statusmsg_time = 0;
+
     if (getWindowSize(&E.screenRws, &E.screenCls) == -1)
     {
         die("getWindowSize");
     }
-    E.screenRws -= 1;
+
+    E.screenRws -= 2;
 }
 
 int main(int argc, char *argv[])
@@ -562,6 +590,8 @@ int main(int argc, char *argv[])
         open(current_filename);
         current_file_extension = get_file_extension(current_filename);
     }
+
+    setStatusMessage("Sigma skibidi toilet rizz", current_filename);
 
     while (1)
     {
