@@ -3,6 +3,9 @@
 #define _BSD_SOURCE
 #define _GNU_SOURCE
 
+#include "statusline.c"
+#include "syntax.c"
+
 #include <ctype.h>
 #include <errno.h>
 #include <stdarg.h>
@@ -26,16 +29,6 @@
 
 // globals
 int MAT_TABSTOP = 4;
-
-char *current_file_extension;
-char *current_filename;
-
-enum mode
-{
-    NORMAL,
-    INSERT,
-    VISUAL
-};
 
 enum highlight
 {
@@ -69,41 +62,6 @@ enum key
 };
 
 // data
-typedef struct erow
-{
-    int idx;
-    int size;
-    int rsize;
-    char *chars;
-    char *render;
-    unsigned char *hl;
-    int hl_open_comment;
-} erow;
-
-#define CURSOR_SHAPE_BLOCK "\x1b[2 q"
-#define CURSOR_SHAPE_BAR "\x1b[6 q"
-
-struct config
-{
-    int cx, cy, rx;
-    int rowOff, colOff;
-    int screenRws, screenCls;
-    int numRws;
-    erow *row;
-
-    int dirty;
-
-    enum mode current_mode;
-
-    char statusmsg[80];
-    time_t statusmsg_time;
-
-    struct syntax *syntax;
-    struct termios orig_termios;
-};
-
-struct config E;
-
 #define HL_HIGHLIGHT_NUMBERS (1 << 0)
 #define HL_HIGHLIGHT_STRINGS (1 << 1)
 
@@ -128,7 +86,7 @@ char *C_HL_keywords[] = {
     "struct", "union", "typedef", "static", "enum", "class", "case",
 
     "int|", "long|", "double|", "float|", "char|", "unsigned|", "signed|",
-    "void|", "struct|", "enum|", "const|", "#define|", "#include", NULL};
+    "void|", "struct|", "enum|", "const|", "#define|", "#include|", NULL};
 
 struct syntax HLDB[] = {
     {"c",
@@ -388,25 +346,25 @@ void updateSyntax(erow *row)
         updateSyntax(&E.row[row->idx + 1]);
 }
 
-int syntaxToColor(int hl)
+const char *syntaxToColor(int hl)
 {
     switch (hl)
     {
     case HL_COMMENT:
     case HL_MLCOMMENT:
-        return 36;
+        return hexToAnsiBackground("#45475a");
     case HL_KEYWORD1:
-        return 33;
+        return hexToAnsiBackground("#f9e2af");
     case HL_KEYWORD2:
-        return 33;
+        return hexToAnsiBackground("#cba6f7");
     case HL_STRING:
-        return 32;
+        return hexToAnsiBackground("#a6e3a1");
     case HL_NUMBER:
-        return 33;
+        return hexToAnsiBackground("#fab387");
     case HL_MATCH:
-        return 34;
+        return hexToAnsiBackground("#f38ba8");
     default:
-        return 37;
+        return hexToAnsiBackground("#f38ba8");
     }
 }
 
@@ -414,10 +372,10 @@ void selectSyntaxHighlight()
 {
     E.syntax = NULL;
 
-    if (current_filename == NULL)
+    if (E.current_file_name == NULL)
         return;
 
-    char *ext = strrchr(current_filename, '.');
+    char *ext = strrchr(E.current_file_name, '.');
 
     for (unsigned int j = 0; j < HLDB_ENTRIES; j++)
     {
@@ -428,7 +386,7 @@ void selectSyntaxHighlight()
         {
             int is_ext = (s->filematch[i][0] == '.');
             if ((is_ext && ext && !strcmp(ext, s->filematch[i])) ||
-                (!is_ext && strstr(current_filename, s->filematch[i])))
+                (!is_ext && strstr(E.current_file_name, s->filematch[i])))
             {
                 E.syntax = s;
                 int filerow;
@@ -705,13 +663,9 @@ void open(char *filename)
 }
 
 // append buffer
-struct abuf
-{
-    char *b;
-    int len;
-};
-
 #define ABUF_INIT {NULL, 0}
+
+struct config E;
 
 void abAppend(struct abuf *ab, const char *s, int len)
 {
@@ -776,54 +730,13 @@ void drawMessage(struct abuf *ab)
     }
 }
 
-void drawStatus(struct abuf *ab)
-{
-    abAppend(ab, "\x1b[7m", 4);
-    char status[80], rstatus[80];
-    char *language_symbol;
-
-    if (current_file_extension == NULL)
-        language_symbol = "󰈙";
-    else if (strcmp(current_file_extension, "c") == 0)
-        language_symbol = "";
-    else if (strcmp(current_file_extension, "cpp") == 0)
-        language_symbol = "";
-    else if (strcmp(current_file_extension, "py") == 0)
-        language_symbol = "";
-    else
-        language_symbol = "󰈙";
-
-    int len = snprintf(status, sizeof(status), "  Mat | %s ", E.current_mode == NORMAL ? "NORMAL" : "INSERT");
-
-    int rlen = snprintf(rstatus, sizeof(rstatus), "%s %s%s - %d/%d",
-                        language_symbol, current_filename, E.dirty ? " *" : "", E.cy, E.numRws);
-
-    if (len > E.screenCls)
-        len = E.screenCls;
-
-    abAppend(ab, status, len);
-
-    while (len < E.screenCls)
-    {
-        if (E.screenCls - len == rlen)
-        {
-            abAppend(ab, rstatus, rlen);
-            break;
-        }
-        else
-        {
-            abAppend(ab, " ", 1);
-            len++;
-        }
-    }
-
-    abAppend(ab, "\x1b[m", 3);
-    abAppend(ab, "\r\n", 2);
-}
-
 void drawRws(struct abuf *ab)
 {
     int y;
+
+    const char *foreground_color = hexToAnsiFore("#1E1D2D");
+    abAppend(ab, foreground_color, strlen(foreground_color)); // Set the global background color
+
     for (y = 0; y < E.screenRws; y++)
     {
         int filerow = y + E.rowOff;
@@ -834,49 +747,48 @@ void drawRws(struct abuf *ab)
         else
         {
             int len = E.row[filerow].rsize - E.colOff;
-
             if (len < 0)
                 len = 0;
-
             if (len > E.screenCls)
                 len = E.screenCls;
 
             char *c = &E.row[filerow].render[E.colOff];
             unsigned char *hl = &E.row[filerow].hl[E.colOff];
-            int current_color = -1;
+            const char *current_color = NULL;
 
             for (int j = 0; j < len; j++)
             {
                 if (hl[j] == HL_NORMAL)
                 {
-                    if (current_color != -1)
+                    if (current_color != NULL)
                     {
-                        abAppend(ab, "\x1b[39m", 5);
-                        current_color = -1;
+                        abAppend(ab, "\033[39m", 5); // Reset foreground color
+                        current_color = NULL;
                     }
-
                     abAppend(ab, &c[j], 1);
                 }
                 else
                 {
-                    int color = syntaxToColor(hl[j]);
+                    const char *color = syntaxToColor(hl[j]);
                     if (color != current_color)
                     {
                         current_color = color;
-                        char buf[16];
-                        int clen = snprintf(buf, sizeof(buf), "\x1b[%dm", color);
-                        abAppend(ab, buf, clen);
+                        abAppend(ab, color, strlen(color));
                     }
-
                     abAppend(ab, &c[j], 1);
                 }
             }
-            abAppend(ab, "\x1b[39m", 5);
+            if (current_color != NULL)
+            {
+
+                abAppend(ab, "\033[39m", 5); // Reset foreground color
+            }
         }
 
-        abAppend(ab, "\x1b[K", 3);
-        abAppend(ab, "\r\n", 2);
+        abAppend(ab, "\x1b[K", 3); // Clear to the end of the line
+        abAppend(ab, "\r\n", 2);   // New line
     }
+    abAppend(ab, "\x1b[0m", 4); // Reset all attributes at the end
 }
 
 void searchCallback(char *query, int key)
@@ -945,7 +857,7 @@ void search()
 
 void save()
 {
-    if (current_filename == NULL)
+    if (E.current_file_name == NULL)
         return;
 
     if (E.dirty)
@@ -962,7 +874,7 @@ void save()
     int len;
     char *buf = rwsToString(&len);
 
-    FILE *file = fopen(current_filename, "w");
+    FILE *file = fopen(E.current_file_name, "w");
     if (!file)
     {
         setStatusMessage("Failed to open file for writing: %s", strerror(errno));
@@ -979,7 +891,7 @@ void save()
     free(buf);
     fclose(file);
 
-    setStatusMessage("File saved: %s", current_filename);
+    setStatusMessage("File saved: %s", E.current_file_name);
     E.dirty = 0;
 }
 
@@ -1311,13 +1223,13 @@ int main(int argc, char *argv[])
 
     if (argc >= 2)
     {
-        current_filename = argv[1];
+        E.current_file_name = argv[1];
 
-        open(current_filename);
-        current_file_extension = get_file_extension(current_filename);
+        open(E.current_file_name);
+        E.current_file_extension = get_file_extension(E.current_file_name);
     }
 
-    setStatusMessage("%s", current_filename);
+    setStatusMessage("%s", E.current_file_name);
 
     while (1)
     {
