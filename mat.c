@@ -140,8 +140,11 @@ struct syntax HLDB[] = {
 
 // proto
 int readKey();
+int getWindowSize(int *rws, int *cls);
 void setStatusMessage(const char *fmt, ...);
 void refreshScreen();
+void handleKeyPress();
+
 char *prompt(char *prompt, void (*callback)(char *, int));
 
 // terminal
@@ -181,17 +184,28 @@ void enableRawMode()
         die("tcsetattr");
 }
 
+void handleWindowSizeChange()
+{
+    if (getWindowSize(&E.screenRws, &E.screenCls) == -1)
+        die("getWindowSize");
+
+    if (E.cy > E.screenRws)
+        E.cy = E.screenRws - 1;
+    if (E.cx > E.screenCls)
+        E.cx = E.screenCls - 1;
+
+    refreshScreen();
+}
+
 int getWindowSize(int *rws, int *cls)
 {
     struct winsize ws;
     if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1 || ws.ws_col == 0)
-    {
         return -1;
-    }
     else
     {
         *rws = ws.ws_row;
-        *cls = ws.ws_col;
+        *cls = ws.ws_col + 4;
         return 0;
     }
 }
@@ -324,7 +338,7 @@ void updateSyntax(erow *row)
 
         if (E.syntax->flags & HL_HIGHLIGHT_NUMBERS)
         {
-            if (isdigit(c) && (prev_sep || prev_hl == HL_NUMBER) || c == '.' && prev_hl == HL_NUMBER)
+            if (isdigit(c) && (prev_sep || prev_hl == HL_NUMBER) || (c == '.' && prev_hl == HL_NUMBER))
             {
                 row->hl[i] = HL_NUMBER;
                 i++;
@@ -1277,6 +1291,8 @@ void init()
     {
         die("getWindowSize");
     }
+
+    signal(SIGWINCH, handleWindowSizeChange);
 
     E.screenRws -= 2;
 }
