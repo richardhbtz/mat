@@ -1,8 +1,8 @@
-// includes
 #define _DEFAULT_SOURCE
 #define _BSD_SOURCE
 #define _GNU_SOURCE
 
+#include "input.c"
 #include "statusline.c"
 #include "syntax.c"
 
@@ -20,10 +20,6 @@
 #include <sys/types.h>
 
 // defines
-#define CTRL_KEY(k) ((k) & 0x1f)
-
-#define KEY_ESC 27
-#define ESC_K -1
 
 #define MAT_VERSION "0.0.1"
 
@@ -42,69 +38,10 @@ enum highlight
     HL_MATCH
 };
 
-enum key
-{
-    BACKSPACE = 127,
-
-    KEY_SLASH = '/',
-    KEY_K = 'k',
-    KEY_J = 'j',
-    KEY_L = 'l',
-    KEY_H = 'h',
-
-    KEY_I = 'i',
-    KEY_A = 'a',
-    KEY_V = 'v',
-
-    KEY_X = 'x',
-
-    KEY_Q = 'q',
-};
-
-// data
-#define HL_HIGHLIGHT_NUMBERS (1 << 0)
-#define HL_HIGHLIGHT_STRINGS (1 << 1)
-
-struct syntax
-{
-    char *filetype;
-    char **filematch;
-
-    char **keywords;
-    char *singleline_comment_start;
-    char *multiline_comment_start;
-    char *multiline_comment_end;
-
-    int flags;
-};
-
-// filetypes
-char *C_HL_extensions[] = {".c", ".h", ".cpp"};
-
-char *C_HL_keywords[] = {
-    "switch", "if", "while", "for", "break", "continue", "return", "else",
-    "struct", "union", "typedef", "static", "enum", "class", "case",
-
-    "int|", "long|", "double|", "float|", "char|", "unsigned|", "signed|",
-    "void|", "struct|", "enum|", "const|", "#define|", "#include|", NULL};
-
-struct syntax HLDB[] = {
-    {"c",
-     C_HL_extensions,
-     C_HL_keywords,
-     "//",
-     "/*", "*/",
-     HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS},
-};
-
-#define HLDB_ENTRIES (sizeof(HLDB) / sizeof(HLDB[0]))
-
 // proto
-int readKey();
 int getWindowSize(int *rws, int *cls);
 void setStatusMessage(const char *fmt, ...);
 void refreshScreen();
-void handleKeyPress();
 
 char *prompt(char *prompt, void (*callback)(char *, int));
 
@@ -1034,156 +971,6 @@ void moveCursor(int key)
     {
         E.cx = rowlen;
     }
-}
-
-int readKey()
-{
-    int nread;
-    char c;
-    while ((nread = read(STDIN_FILENO, &c, 1)) != 1)
-    {
-        if (nread == -1 && errno != EAGAIN)
-            die("read");
-    }
-    if (c == '\x1b')
-    {
-        char seq[2];
-        if (read(STDIN_FILENO, &seq[0], 1) == 0)
-        {
-            return KEY_ESC;
-        }
-        else
-        {
-            read(STDIN_FILENO, &seq[1], 1);
-            return -1;
-        }
-    }
-    else
-    {
-        switch (c)
-        {
-
-        case '/':
-            return KEY_SLASH;
-        case 'k':
-            return KEY_K;
-        case 'j':
-            return KEY_J;
-        case 'h':
-            return KEY_H;
-        case 'l':
-            return KEY_L;
-
-        case 'q':
-            return KEY_Q;
-
-        case 'i':
-            return KEY_I;
-
-        case 'v':
-            return KEY_V;
-
-        case 'x':
-            return KEY_X;
-        }
-        return c;
-    }
-}
-
-void handleKeyPress()
-{
-    int c = readKey();
-
-    if (c == ESC_K)
-        return;
-
-    if (c == KEY_ESC && E.current_mode == INSERT)
-    {
-        E.current_mode = NORMAL;
-        return;
-    }
-
-    if (E.current_mode == NORMAL)
-    {
-        switch (c)
-        {
-
-        case CTRL_KEY('s'):
-            save();
-            break;
-
-        case CTRL_KEY('u'):
-            for (int y = 0; y < 4; y++)
-            {
-                if (E.cy - 1 <= E.numRws)
-                {
-                    moveCursor(KEY_K);
-                }
-            }
-
-            break;
-        case CTRL_KEY('d'):
-            for (int y = 0; y < 4; y++)
-            {
-                if (E.cy + 1 <= E.numRws)
-                {
-                    moveCursor(KEY_J);
-                }
-            }
-            break;
-
-        case KEY_Q:
-            if (E.current_mode != INSERT)
-            {
-                write(STDOUT_FILENO, "\x1b[2J", 4);
-                write(STDOUT_FILENO, "\x1b[H", 3);
-                exit(0);
-            }
-            break;
-
-        case KEY_X:
-            deleteChar();
-            break;
-
-        case KEY_A:
-            moveCursor(KEY_L);
-            E.current_mode = INSERT;
-            break;
-
-        case KEY_I:
-            E.current_mode = INSERT;
-            break;
-
-        case KEY_SLASH:
-            search();
-            break;
-
-        case KEY_K:
-        case KEY_J:
-        case KEY_H:
-        case KEY_L:
-            moveCursor(c);
-            break;
-        }
-    }
-
-    else
-        switch (c)
-        {
-        case '\x1b':
-            break;
-        case '\r':
-            insertNewLine();
-            break;
-
-        case BACKSPACE:
-            deleteChar();
-            break;
-
-        default:
-            insertChar(c);
-            break;
-        }
 }
 
 // init

@@ -1,5 +1,16 @@
+#pragma once
+
+#include "input.h"
 #include <termios.h>
 #include <time.h>
+
+void moveCursor(int key);
+void search();
+void deleteChar();
+void insertNewLine();
+void insertChar(int c);
+void save();
+void die(const char *s);
 
 typedef struct erow
 {
