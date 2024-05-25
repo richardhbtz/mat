@@ -80,6 +80,9 @@ typedef struct erow
     int hl_open_comment;
 } erow;
 
+#define CURSOR_SHAPE_BLOCK "\x1b[2 q"
+#define CURSOR_SHAPE_BAR "\x1b[6 q"
+
 struct config
 {
     int cx, cy, rx;
@@ -155,6 +158,11 @@ void die(const char *s)
 
     perror(s);
     exit(1);
+}
+
+void setCursorShape(const char *shape)
+{
+    write(STDOUT_FILENO, shape, 6);
 }
 
 void disableRawMode()
@@ -313,7 +321,7 @@ void updateSyntax(erow *row)
                 if (c == '\\' && i + 1 < row->rsize)
                 {
                     row->hl[i + 1] = HL_STRING;
-                    i = +2;
+                    i += 2;
                     continue;
                 }
 
@@ -982,7 +990,6 @@ void refreshScreen()
     struct abuf ab = ABUF_INIT;
     abAppend(&ab, "\x1b[?25l", 6);
     abAppend(&ab, "\x1b[H", 3);
-
     drawRws(&ab);
     drawStatus(&ab);
     drawMessage(&ab);
@@ -1310,7 +1317,7 @@ int main(int argc, char *argv[])
         current_file_extension = get_file_extension(current_filename);
     }
 
-    setStatusMessage("Sigma skibidi toilet rizz", current_filename);
+    setStatusMessage("%s", current_filename);
 
     while (1)
     {
